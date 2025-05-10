@@ -14,7 +14,8 @@ class TelegramNotifier:
         
         Args:
             token (str): Telegram bot token. If not provided, will try to get from environment variable TELEGRAM_BOT_TOKEN
-            chat_id (str): Telegram chat ID to send messages to. If not provided, will try to get from environment variable TELEGRAM_CHAT_ID
+            chat_id (str): Telegram chat/channel ID. If not provided, will try to get from environment variable TELEGRAM_CHAT_ID.
+                          For channels, this should be the channel ID (e.g., -1001234567890)
         """
         self.token = token or os.getenv('TELEGRAM_BOT_TOKEN')
         if not self.token:
@@ -24,7 +25,9 @@ class TelegramNotifier:
         if not self.chat_id:
             raise ValueError("Telegram chat ID not provided and TELEGRAM_CHAT_ID environment variable not set")
         
-        logger.debug(f"Initializing TelegramNotifier with chat_id: {self.chat_id}")
+        # Ensure the chat_id is a string
+        self.chat_id = str(self.chat_id)
+        
         self.bot = Bot(token=self.token)
 
     async def send_message(self, message: str) -> bool:
@@ -38,15 +41,29 @@ class TelegramNotifier:
             bool: True if message was sent successfully, False otherwise
         """
         try:
-            await self.bot.send_message(
+            logger.info(f"Attempting to send message to channel {self.chat_id}")
+            response = await self.bot.send_message(
                 chat_id=self.chat_id,
                 text=message,
-                parse_mode=None
+                parse_mode='HTML'  # Re-enable HTML parsing for better formatting in channels
             )
+            logger.info(f"Message sent successfully: {response.message_id}")
             return True
         except TelegramError as e:
             logger.error(f"Failed to send Telegram message: {str(e)}")
-            return False
+            # If HTML parsing fails, try without it
+            try:
+                logger.info("Retrying without HTML parsing")
+                response = await self.bot.send_message(
+                    chat_id=self.chat_id,
+                    text=message,
+                    parse_mode=None
+                )
+                logger.info(f"Plain text message sent successfully: {response.message_id}")
+                return True
+            except TelegramError as e2:
+                logger.error(f"Failed to send plain text message: {str(e2)}")
+                return False
 
     def format_listing_message(self, listing: Dict[str, Any]) -> str:
         """
@@ -66,11 +83,11 @@ class TelegramNotifier:
         details = listing.get('details', {})
         
         message = [
-            f"🏠 {listing.get('title', 'New Listing')}",
+            f"🏠 <b>{listing.get('title', 'New Listing')}</b>",
             f"💰 Price: ₪{listing.get('price', 'N/A'):,}",
             f"📍 {address.get('street', '')} {address.get('number', '')}, {address.get('neighborhood', '')}",
             f"🛋 {details.get('rooms', 'N/A')} rooms, {details.get('square_meters', 'N/A')}m²",
-            f"🔗 {listing.get('link', '')}"
+            f"🔗 <a href='{listing.get('link', '')}'>View on Yad2</a>"
         ]
         
         if listing.get('type') == 'agency':

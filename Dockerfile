@@ -12,5 +12,8 @@ COPY . .
 # Create a directory for persistent storage
 RUN mkdir -p /app/data
 
+# Set container environment variable
+ENV CONTAINER_ENV=true
+
 # Run the script
 CMD ["python", "-m", "src.main"]
