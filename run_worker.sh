@@ -27,15 +27,33 @@ pip3 install -r requirements.txt
 echo "Installed Python packages:"
 pip3 list
 
-# Add cron job with tee to show logs in both file and stdout
-# Use the Python from our environment
-PYTHON_PATH=$(which python3)
-echo "Using Python from: $PYTHON_PATH"
+# Create a wrapper script that will be called by cron
+cat > /app/run_scraper.sh << 'EOF'
+#!/bin/bash
+export PATH="/usr/local/bin:$PATH"
+cd /app
 
-echo "0 * * * * cd /app && $PYTHON_PATH -m src.main 2>&1 | tee -a /app/data/cron.log" | crontab -
+# Setup Python environment
+if [ -d "/app/venv" ]; then
+    source /app/venv/bin/activate
+fi
+
+# Run the scraper
+/usr/local/bin/python3 -m src.main 2>&1 | tee -a /app/data/cron.log
+EOF
+
+# Make the wrapper script executable
+chmod +x /app/run_scraper.sh
+
+# Add cron job to run the wrapper script
+echo "0 * * * * /app/run_scraper.sh" | crontab -
 
 echo "Installed crontab:"
 crontab -l
+
+# Test run the script directly
+echo "Testing scraper script directly..."
+/app/run_scraper.sh
 
 # Monitor cron.log and echo to stdout (this will show in Render.com logs)
 tail -f /app/data/cron.log &
