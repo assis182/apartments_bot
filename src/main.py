@@ -8,41 +8,6 @@ import logging
 import pathlib
 from logging.handlers import RotatingFileHandler
 
-def setup_logging():
-    """Configure logging to both file and stdout."""
-    # Create logs directory
-    log_dir = os.path.join(get_data_dir(), 'logs')
-    pathlib.Path(log_dir).mkdir(parents=True, exist_ok=True)
-    
-    # Create a rotating file handler
-    log_file = os.path.join(log_dir, 'yad2_scraper.log')
-    file_handler = RotatingFileHandler(
-        log_file,
-        maxBytes=1024 * 1024,  # 1MB
-        backupCount=5
-    )
-    file_handler.setFormatter(logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    ))
-    
-    # Create console handler that writes to the cron.log
-    cron_log = os.path.join(get_data_dir(), 'cron.log')
-    cron_handler = logging.FileHandler(cron_log)
-    cron_handler.setFormatter(logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    ))
-    
-    # Configure root logger
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
-    root_logger.addHandler(file_handler)
-    root_logger.addHandler(cron_handler)
-    
-    return logging.getLogger(__name__)
-
-# Initialize logger
-logger = setup_logging()
-
 def get_data_dir():
     """Get the appropriate data directory based on environment."""
     # Check if we're running in a container
@@ -59,6 +24,75 @@ def get_data_dir():
 def get_file_path(filename):
     """Get the full path for a file in the data directory."""
     return os.path.join(get_data_dir(), filename)
+
+def setup_logging():
+    """Configure logging to both file and stdout."""
+    try:
+        # First set up a basic console logger in case something fails
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        basic_logger = logging.getLogger(__name__)
+        
+        # Get data directory
+        data_dir = get_data_dir()
+        basic_logger.info(f"Data directory: {data_dir}")
+        
+        # Create logs directory
+        log_dir = os.path.join(data_dir, 'logs')
+        pathlib.Path(log_dir).mkdir(parents=True, exist_ok=True)
+        basic_logger.info(f"Log directory: {log_dir}")
+        
+        # Create a rotating file handler
+        log_file = os.path.join(log_dir, 'yad2_scraper.log')
+        file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=1024 * 1024,  # 1MB
+            backupCount=5
+        )
+        file_handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        ))
+        basic_logger.info(f"Created rotating file handler for: {log_file}")
+        
+        # Create console handler that writes to the cron.log
+        cron_log = os.path.join(data_dir, 'cron.log')
+        cron_handler = logging.FileHandler(cron_log)
+        cron_handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        ))
+        basic_logger.info(f"Created cron log handler for: {cron_log}")
+        
+        # Configure root logger
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.INFO)
+        
+        # Remove any existing handlers
+        for handler in root_logger.handlers[:]:
+            root_logger.removeHandler(handler)
+        
+        # Add our handlers
+        root_logger.addHandler(file_handler)
+        root_logger.addHandler(cron_handler)
+        
+        logger = logging.getLogger(__name__)
+        logger.info("Logging setup completed successfully")
+        return logger
+        
+    except Exception as e:
+        # If something goes wrong, set up basic console logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error setting up logging: {str(e)}", exc_info=True)
+        logger.info("Falling back to basic console logging")
+        return logger
+
+# Initialize logger
+logger = setup_logging()
 
 def print_listing(listing):
     """Print a single listing in a readable format."""
