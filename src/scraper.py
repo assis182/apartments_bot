@@ -7,8 +7,7 @@ import re
 import os
 from datetime import datetime
 import logging
-
-logger = logging.getLogger(__name__)
+from src.utils import get_data_dir, logger  # Updated import to use utils.py
 
 class Yad2Scraper:
     def __init__(self):
@@ -82,6 +81,8 @@ class Yad2Scraper:
                 "הצפון הישן - צפון"
             ]
             
+            any_request_succeeded = False  # Track if any request succeeded
+            
             for neighborhood_name in neighborhoods:
                 logger.info(f"Searching in {neighborhood_name}...")
                 
@@ -131,13 +132,19 @@ class Yad2Scraper:
                     logger.info(f"Response status code: {response.status_code}")
                     
                     if response.status_code == 200:
+                        any_request_succeeded = True
                         html_content = response.text
                         
-                        # Save HTML content for debugging
-                        debug_file = f"debug_html_{neighborhood_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-                        with open(os.path.join(get_data_dir(), debug_file), 'w', encoding='utf-8') as f:
-                            f.write(html_content)
-                        logger.debug(f"Saved HTML content to {debug_file}")
+                        try:
+                            # Save HTML content for debugging
+                            debug_file = f"debug_html_{neighborhood_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+                            debug_path = os.path.join(get_data_dir(), debug_file)
+                            with open(debug_path, 'w', encoding='utf-8') as f:
+                                f.write(html_content)
+                            logger.debug(f"Saved HTML content to {debug_file}")
+                        except Exception as e:
+                            logger.error(f"Failed to save debug HTML: {str(e)}")
+                            # Continue processing even if debug save fails
                         
                         # Look for various possible data patterns
                         patterns = [
@@ -204,6 +211,10 @@ class Yad2Scraper:
                 # Add a small delay between requests
                 time.sleep(random.uniform(2, 4))  # Increased delay
             
+            if not any_request_succeeded:
+                logger.error("All requests failed - keeping existing listings")
+                return []  # Return empty list to indicate failure but not remove existing listings
+            
             logger.info(f"Total listings found across all neighborhoods: {len(all_listings)}")
             
             # Verify all listings are from the correct neighborhoods
@@ -216,7 +227,7 @@ class Yad2Scraper:
             
         except Exception as e:
             logger.error(f"Error during search: {str(e)}", exc_info=True)
-            return []
+            return []  # Return empty list to indicate failure but not remove existing listings
 
     def parse_listings(self, data):
         """Parse the listings from the response data."""
