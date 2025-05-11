@@ -17,6 +17,44 @@ class Config:
     NEIGHBORHOODS = os.getenv('NEIGHBORHOODS', '1483,204,1516').split(',')
     PROPERTY_CONDITION = os.getenv('PROPERTY_CONDITION', '1,6,2').split(',')
 
+    # Proxy configuration
+    USE_PROXY = True  # Set to False to disable proxy
+    PROXY_ROTATION_ENABLED = True
+    PROXY_URLS = [
+        # Add your proxy URLs here in the format:
+        # 'http://user:pass@host:port'
+        # 'socks5://user:pass@host:port'
+    ]
+    
+    # Request configuration
+    MAX_RETRIES = 3
+    RETRY_DELAY = 10  # seconds
+    REQUEST_TIMEOUT = 30  # seconds
+    
+    # Browser profiles - rotate between these
+    BROWSER_PROFILES = [
+        {
+            'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'platform': 'macOS',
+            'viewport': {'width': 1440, 'height': 900},
+        },
+        {
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'platform': 'Windows',
+            'viewport': {'width': 1920, 'height': 1080},
+        },
+        {
+            'user_agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'platform': 'Linux',
+            'viewport': {'width': 1680, 'height': 1050},
+        }
+    ]
+    
+    # Anti-bot evasion settings
+    MIN_REQUEST_DELAY = 3
+    MAX_REQUEST_DELAY = 7
+    PROGRESSIVE_DELAYS = True  # Increase delays after failed attempts
+
     # Headers
     @classmethod
     def get_headers(cls):
