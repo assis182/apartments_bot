@@ -70,18 +70,27 @@ class Yad2Scraper:
                 'Sec-Fetch-User': '?1',
                 'Sec-Fetch-Dest': 'document',
                 'Cache-Control': 'max-age=0',
+                'DNT': '1',  # Do Not Track
+                'Upgrade-Insecure-Requests': '1',
             })
 
-            # Visit the homepage first
+            # Visit the homepage first with a realistic referrer
             logger.debug("Visiting homepage")
             home_response = self.session.get(
                 'https://www.yad2.co.il',
                 headers={
                     **self.session.headers,
                     'Purpose': 'prefetch',
+                    'Referer': 'https://www.google.com/',
                 }
             )
-            time.sleep(random.uniform(2, 4))
+            time.sleep(random.uniform(3, 5))
+
+            # Store cookies properly
+            all_cookies = []
+            if 'Set-Cookie' in home_response.headers:
+                cookies = home_response.headers['Set-Cookie'].split(', ')
+                all_cookies.extend(cookies)
 
             # Then visit the real estate section
             logger.debug("Visiting real estate section")
@@ -90,18 +99,20 @@ class Yad2Scraper:
                 headers={
                     **self.session.headers,
                     'Referer': 'https://www.yad2.co.il',
+                    'Sec-Fetch-Site': 'same-origin',
                 }
             )
-            time.sleep(random.uniform(2, 4))
+            time.sleep(random.uniform(3, 5))
 
-            # Store cookies from both responses
-            all_cookies = []
-            for response in [home_response, realestate_response]:
-                if 'Set-Cookie' in response.headers:
-                    all_cookies.extend(response.headers.getall('Set-Cookie'))
+            # Add cookies from real estate response
+            if 'Set-Cookie' in realestate_response.headers:
+                cookies = realestate_response.headers['Set-Cookie'].split(', ')
+                all_cookies.extend(cookies)
             
             if all_cookies:
-                self.session.headers.update({'Cookie': '; '.join(all_cookies)})
+                # Clean and deduplicate cookies
+                unique_cookies = list(dict.fromkeys(all_cookies))
+                self.session.headers.update({'Cookie': '; '.join(unique_cookies)})
                 logger.debug("Updated session cookies")
 
             # Get the CSRF token
@@ -110,9 +121,16 @@ class Yad2Scraper:
                 match = re.search(r'csrf-token"\s+content="([^"]+)"', response.text)
                 if match:
                     csrf_token = match.group(1)
-                    self.session.headers.update({'X-CSRF-TOKEN': csrf_token})
+                    self.session.headers.update({
+                        'X-CSRF-TOKEN': csrf_token,
+                        'X-Requested-With': 'XMLHttpRequest'
+                    })
                     logger.debug(f"Found CSRF token: {csrf_token}")
                     break
+
+            # Simulate some mouse movement and scrolling behavior
+            logger.debug("Simulating user interaction")
+            time.sleep(random.uniform(2, 4))
 
             # Make a preliminary API request
             logger.debug("Making preliminary API request")
@@ -122,9 +140,24 @@ class Yad2Scraper:
                     **self.session.headers,
                     'Accept': 'application/json',
                     'Referer': 'https://www.yad2.co.il/realestate/rent',
+                    'Sec-Fetch-Site': 'same-origin',
+                    'Sec-Fetch-Mode': 'cors',
+                    'Sec-Fetch-Dest': 'empty'
                 }
             )
-            time.sleep(random.uniform(2, 4))
+            time.sleep(random.uniform(3, 5))
+
+            # Visit the search page with filters
+            logger.debug("Visiting search page with filters")
+            self.session.get(
+                'https://www.yad2.co.il/realestate/rent?city=5000&property=1&rooms=3-4&price=0-13000',
+                headers={
+                    **self.session.headers,
+                    'Referer': 'https://www.yad2.co.il/realestate/rent',
+                    'Sec-Fetch-Site': 'same-origin',
+                }
+            )
+            time.sleep(random.uniform(3, 5))
 
         except Exception as e:
             logger.error(f"Error during browser simulation: {str(e)}", exc_info=True)
