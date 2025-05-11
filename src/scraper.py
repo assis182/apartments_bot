@@ -157,29 +157,25 @@ class Yad2Scraper:
             logger.error(f"Error saving cookies: {str(e)}")
 
     def _setup_session(self):
-        """Setup the session with realistic browser headers."""
-        # Generate consistent device fingerprint
+        """Setup the session with mobile app headers."""
+        # Generate a consistent device ID
         device_id = self._generate_device_id()
         
-        # More sophisticated browser fingerprinting
+        # Simulate Yad2's mobile app
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9,he;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"macOS"',
-            'Sec-Ch-Ua-Platform-Version': '10_15_7',
-            'Cache-Control': 'max-age=0',
-            'DNT': '1',
-            'Upgrade-Insecure-Requests': '1',
-            'X-Device-Id': device_id,
-            'X-Platform': 'desktop',
-            'X-App-Version': '1.0.0',
+            'User-Agent': 'Yad2 Android App v5.0.0',
+            'X-Yad2-App-Version': '5.0.0',
+            'X-Yad2-Device-Id': device_id,
+            'X-Yad2-Device-Type': 'android',
+            'Accept': 'application/json',
+            'Accept-Language': 'he-IL',
+            'Accept-Encoding': 'gzip',
+            'Connection': 'Keep-Alive',
+            'Content-Type': 'application/json; charset=UTF-8',
+            'Host': 'www.yad2.co.il',
+            'Cache-Control': 'no-cache'
         })
-        logger.debug("Session headers configured")
+        logger.debug("Session headers configured for mobile app")
 
     def _generate_device_id(self):
         """Generate a consistent device ID based on container/environment."""
@@ -189,101 +185,44 @@ class Yad2Scraper:
         return device_id
 
     def _simulate_browser_behavior(self):
-        """Simulate realistic browser behavior."""
-        logger.debug("Simulating browser behavior")
+        """Simulate mobile app initialization."""
+        logger.debug("Simulating mobile app behavior")
         
         try:
-            # Get browser profile
-            profile = self._get_browser_profile()
+            # Initial app launch request
+            launch_response = self._make_request('GET',
+                'https://www.yad2.co.il/api/v2/app/init',
+                headers={
+                    'Accept': 'application/json',
+                }
+            )
+            time.sleep(random.uniform(1, 2))
+
+            # Get feed token
+            token_response = self._make_request('GET',
+                'https://www.yad2.co.il/api/v2/feed/token',
+                headers={
+                    'Accept': 'application/json',
+                }
+            )
             
-            # Update headers with profile information
-            self.session.headers.update({
-                'User-Agent': profile['user_agent'],
-                'Sec-Ch-Ua-Platform': f'"{profile["platform"]}"',
-                'Sec-Ch-Width': str(profile['viewport']['width']),
-                'Sec-Ch-Viewport-Width': str(profile['viewport']['width']),
-                'Viewport-Width': str(profile['viewport']['width']),
-            })
+            if token_response and token_response.status_code == 200:
+                try:
+                    token_data = token_response.json()
+                    if 'token' in token_data:
+                        self.session.headers.update({
+                            'X-Yad2-Feed-Token': token_data['token']
+                        })
+                except json.JSONDecodeError:
+                    pass
 
-            # Visit Google search first
-            search_query = "yad2 תל אביב דירות להשכרה"
-            encoded_query = urlencode({'q': search_query})
-            self._make_request('GET', 
-                f'https://www.google.com/search?{encoded_query}',
-                headers={'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'}
-            )
-            time.sleep(random.uniform(2, 4))
-
-            # Visit Yad2 homepage through Google search
-            home_response = self._make_request('GET',
-                'https://www.yad2.co.il',
-                headers={
-                    'Referer': f'https://www.google.com/search?{encoded_query}',
-                    'Sec-Fetch-Site': 'cross-site',
-                    'Sec-Fetch-Mode': 'navigate',
-                    'Sec-Fetch-User': '?1',
-                }
-            )
-            self._save_cookies()
-            time.sleep(random.uniform(3, 5))
-
-            # Visit real estate section
-            realestate_response = self._make_request('GET',
-                'https://www.yad2.co.il/realestate/rent',
-                headers={
-                    'Referer': 'https://www.yad2.co.il',
-                    'Sec-Fetch-Site': 'same-origin',
-                }
-            )
-            self._save_cookies()
-
-            # Extract CSRF token
-            csrf_token = None
-            for response in [home_response, realestate_response]:
-                match = re.search(r'csrf-token"\s+content="([^"]+)"', response.text)
-                if match:
-                    csrf_token = match.group(1)
-                    self.session.headers.update({
-                        'X-CSRF-TOKEN': csrf_token,
-                        'X-Requested-With': 'XMLHttpRequest'
-                    })
-                    break
-
-            # Simulate progressive search refinement
-            self._simulate_search_refinement()
+            time.sleep(random.uniform(1, 2))
 
         except Exception as e:
-            logger.error(f"Error during browser simulation: {str(e)}", exc_info=True)
-
-    def _simulate_search_refinement(self):
-        """Simulate a user progressively refining their search."""
-        base_url = 'https://www.yad2.co.il/realestate/rent'
-        
-        # Start with basic search
-        params = []
-        search_sequence = [
-            ('city', '5000'),  # Tel Aviv
-            ('property', '1'),  # Apartments
-            ('rooms', '3-4'),  # Room range
-            ('price', '0-13000'),  # Price range
-        ]
-
-        for param in search_sequence:
-            params.append(param)
-            url = f"{base_url}?{urlencode(params)}"
-            
-            self._make_request('GET', url, 
-                headers={
-                    'Referer': base_url,
-                    'Sec-Fetch-Site': 'same-origin',
-                }
-            )
-            time.sleep(random.uniform(2, 4))
-
-        self._save_cookies()
+            logger.error(f"Error during mobile app simulation: {str(e)}", exc_info=True)
 
     def search_listings(self):
-        """Search for listings using the JSON API."""
+        """Search for listings using the mobile API."""
         try:
             # Log environment info
             is_container = os.getenv('CONTAINER_ENV') == 'true'
@@ -292,7 +231,7 @@ class Yad2Scraper:
             logger.info(f"Current time: {datetime.now().isoformat()}")
             logger.info(f"Current timezone: {time.tzname}")
             
-            # Initialize browser environment
+            # Initialize mobile app environment
             self._simulate_browser_behavior()
             
             all_listings = []
@@ -302,42 +241,39 @@ class Yad2Scraper:
                 logger.info(f"Searching in {neighborhood_name}...")
                 
                 try:
-                    # Prepare search parameters
+                    # Mobile API search parameters
                     search_params = {
-                        'category': 2,  # Real estate
-                        'subCategory': 2,  # Rent
-                        'city': 5000,  # Tel Aviv
-                        'neighborhood': neighborhood_name,
-                        'price': '0-13000',
-                        'rooms': '3-4',
-                        'parking': 1,
-                        'shelter': 1,
-                        'page': 1,
-                        'limit': 50
+                        "cat": 2,
+                        "subcat": 2,
+                        "city": 5000,
+                        "neighborhood": neighborhood_name,
+                        "rooms": f"{self.config.MIN_ROOMS}-{self.config.MAX_ROOMS}",
+                        "price": "-1-13000",
+                        "parking": "1",
+                        "shelter": "1",
+                        "page": 1,
+                        "limit": 50,
+                        "filters": "parking=1&shelter=1"
                     }
                     
-                    # Make the API request with our enhanced request handler
+                    # Make the API request
                     response = self._make_request(
                         'GET',
-                        f"{self.config.API_URL}/api/feed/get",
+                        "https://www.yad2.co.il/api/v2/feed/feed",
                         params=search_params,
                         headers={
-                            'Accept': 'application/json, text/plain, */*',
-                            'Referer': 'https://www.yad2.co.il/realestate/rent',
-                            'Sec-Fetch-Site': 'same-origin',
-                            'Sec-Fetch-Mode': 'cors',
-                            'Sec-Fetch-Dest': 'empty'
+                            'Accept': 'application/json',
                         }
                     )
                     
-                    # Process the response
                     if response and response.status_code == 200:
                         try:
                             data = response.json()
                             
-                            if 'feed' in data and 'feed_items' in data['feed']:
+                            # Mobile API has a different response structure
+                            if 'data' in data and 'feed' in data['data']:
                                 any_request_succeeded = True
-                                neighborhood_listings = self.parse_listings(data['feed'])
+                                neighborhood_listings = self.parse_listings(data['data'])
                                 
                                 filtered_listings = [
                                     listing for listing in neighborhood_listings
@@ -377,114 +313,44 @@ class Yad2Scraper:
             return []
 
     def parse_listings(self, data):
-        """Parse the listings from the response data."""
+        """Parse the listings from the mobile API response."""
         try:
-            # If data is already a list of listings, return it
-            if isinstance(data, list):
-                return data
-            
-            # Find the feed data in the Next.js initial state
-            feed_data = None
-            for query in data['props']['pageProps']['dehydratedState']['queries']:
-                if 'data' in query['state'] and isinstance(query['state']['data'], dict):
-                    if 'private' in query['state']['data'] or 'agency' in query['state']['data']:
-                        feed_data = query['state']['data']
-                        break
-            
-            if not feed_data:
-                logger.warning("No feed data found in the response")
-                return []
-            
             listings = []
             
-            # Process private listings
-            if 'private' in feed_data:
-                for listing in feed_data['private']:
-                    try:
-                        # Check if the address contains any excluded street
-                        street_name = listing.get('address', {}).get('street', {}).get('text', '')
-                        if hasattr(Config, 'EXCLUDED_STREETS') and any(excluded in street_name for excluded in Config.EXCLUDED_STREETS):
-                            logger.debug(f"Skipping listing in excluded street: {street_name}")
-                            continue
-                        
-                        parsed = {
-                            'id': listing.get('orderId'),
-                            'type': 'private',
-                            'title': f"{listing.get('additionalDetails', {}).get('property', {}).get('text', '')} - {listing.get('address', {}).get('street', {}).get('text', '')} {listing.get('address', {}).get('house', {}).get('number', '')}",
-                            'price': listing.get('price'),
-                            'address': {
-                                'street': listing.get('address', {}).get('street', {}).get('text', ''),
-                                'number': listing.get('address', {}).get('house', {}).get('number', ''),
-                                'floor': listing.get('address', {}).get('house', {}).get('floor', ''),
-                                'neighborhood': listing.get('address', {}).get('neighborhood', {}).get('text', ''),
-                                'city': listing.get('address', {}).get('city', {}).get('text', '')
-                            },
-                            'details': {
-                                'rooms': listing.get('additionalDetails', {}).get('roomsCount'),
-                                'square_meters': listing.get('additionalDetails', {}).get('squareMeter'),
-                                'square_meters_build': listing.get('metaData', {}).get('squareMeterBuild', listing.get('additionalDetails', {}).get('squareMeter')),
-                                'condition': listing.get('additionalDetails', {}).get('propertyCondition', {}).get('id')
-                            },
-                            'images': listing.get('metaData', {}).get('images', []),
-                            'cover_image': listing.get('metaData', {}).get('coverImage', ''),
-                            'link': f"https://www.yad2.co.il/item/{listing.get('token', '')}"
-                        }
-                        # Clean up None values
-                        parsed = {k: v for k, v in parsed.items() if v is not None}
-                        listings.append(parsed)
-                    except Exception as e:
-                        logger.error(f"Error parsing private listing: {str(e)}")
-                        continue
+            # Handle mobile API response structure
+            feed_items = data.get('feed', [])
             
-            # Process agency listings
-            if 'agency' in feed_data:
-                for listing in feed_data['agency']:
-                    try:
-                        # Check if the address contains any excluded street
-                        street_name = listing.get('address', {}).get('street', {}).get('text', '')
-                        if hasattr(Config, 'EXCLUDED_STREETS') and any(excluded in street_name for excluded in Config.EXCLUDED_STREETS):
-                            logger.debug(f"Skipping listing in excluded street: {street_name}")
-                            continue
-                        
-                        parsed = {
-                            'id': listing.get('orderId'),
-                            'type': 'agency',
-                            'title': f"{listing.get('additionalDetails', {}).get('property', {}).get('text', '')} - {listing.get('address', {}).get('street', {}).get('text', '')} {listing.get('address', {}).get('house', {}).get('number', '')}",
-                            'price': listing.get('price'),
-                            'address': {
-                                'street': listing.get('address', {}).get('street', {}).get('text', ''),
-                                'number': listing.get('address', {}).get('house', {}).get('number', ''),
-                                'floor': listing.get('address', {}).get('house', {}).get('floor', ''),
-                                'neighborhood': listing.get('address', {}).get('neighborhood', {}).get('text', ''),
-                                'city': listing.get('address', {}).get('city', {}).get('text', '')
-                            },
-                            'details': {
-                                'rooms': listing.get('additionalDetails', {}).get('roomsCount'),
-                                'square_meters': listing.get('additionalDetails', {}).get('squareMeter'),
-                                'square_meters_build': listing.get('metaData', {}).get('squareMeterBuild', listing.get('additionalDetails', {}).get('squareMeter')),
-                                'condition': listing.get('additionalDetails', {}).get('propertyCondition', {}).get('id')
-                            },
-                            'agency': listing.get('customer', {}).get('agencyName', ''),
-                            'images': listing.get('metaData', {}).get('images', []),
-                            'cover_image': listing.get('metaData', {}).get('coverImage', ''),
-                            'link': f"https://www.yad2.co.il/item/{listing.get('token', '')}"
-                        }
-                        
-                        # Add tags if present
-                        if 'tags' in listing:
-                            parsed['tags'] = [tag.get('name', '') for tag in listing['tags'] if tag.get('name')]
-                        
-                        # Clean up None values
-                        parsed = {k: v for k, v in parsed.items() if v is not None}
-                        listings.append(parsed)
-                    except Exception as e:
-                        logger.error(f"Error parsing agency listing: {str(e)}")
-                        continue
+            for item in feed_items:
+                try:
+                    parsed = {
+                        'id': item.get('id'),
+                        'type': 'mobile',
+                        'title': f"{item.get('type_title', '')} - {item.get('street', '')} {item.get('house_number', '')}",
+                        'price': item.get('price'),
+                        'address': {
+                            'street': item.get('street'),
+                            'number': item.get('house_number'),
+                            'floor': item.get('floor'),
+                            'neighborhood': item.get('neighborhood'),
+                            'city': item.get('city')
+                        },
+                        'details': {
+                            'rooms': item.get('rooms'),
+                            'square_meters': item.get('square_meters'),
+                            'condition': item.get('property_condition')
+                        },
+                        'images': item.get('images', []),
+                        'link': f"https://www.yad2.co.il/item/{item.get('id')}"
+                    }
+                    # Clean up None values
+                    parsed = {k: v for k, v in parsed.items() if v is not None}
+                    listings.append(parsed)
+                except Exception as e:
+                    logger.error(f"Error parsing listing: {str(e)}")
+                    continue
             
             return listings
             
         except Exception as e:
             logger.error(f"Error parsing listings: {str(e)}", exc_info=True)
-            logger.debug("Raw data structure:")
-            logger.debug(json.dumps(data, indent=2))
             return [] 
