@@ -61,6 +61,13 @@ def setup_logging():
         ))
         basic_logger.info(f"Created cron log handler for: {cron_log}")
         
+        # Create stdout handler for container logs
+        stdout_handler = logging.StreamHandler()
+        stdout_handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        ))
+        basic_logger.info("Created stdout handler for container logs")
+        
         # Configure root logger
         root_logger = logging.getLogger()
         root_logger.setLevel(logging.INFO)
@@ -72,6 +79,7 @@ def setup_logging():
         # Add our handlers
         root_logger.addHandler(file_handler)
         root_logger.addHandler(cron_handler)
+        root_logger.addHandler(stdout_handler)  # Add stdout handler
         
         logger = logging.getLogger(__name__)
         logger.info("Logging setup completed successfully")

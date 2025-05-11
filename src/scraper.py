@@ -10,6 +10,11 @@ import logging
 from src.utils import get_data_dir, logger  # Updated import to use utils.py
 import sys
 
+stdout_handler = logging.StreamHandler()
+stdout_handler.setFormatter(logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+))
+
 class Yad2Scraper:
     def __init__(self):
         self.config = Config()
