@@ -165,6 +165,24 @@ class Yad2Scraper:
                         logger.info(f"HTML content length: {len(html_content)}")
                         logger.info(f"First 500 chars of HTML: {html_content[:500]}")
                         
+                        # Check if we got a valid HTML response
+                        if len(html_content) < 1000:  # Suspiciously small
+                            logger.warning("Received suspiciously small HTML response")
+                            logger.info(f"Full response content: {html_content}")
+                            continue
+                            
+                        if not any(marker in html_content for marker in ['<html', '<body', '<head']):
+                            logger.warning("Response doesn't appear to be HTML")
+                            logger.info(f"Response content type: {response.headers.get('Content-Type', 'unknown')}")
+                            logger.info(f"First 1000 chars: {html_content[:1000]}")
+                            continue
+                            
+                        # Check for common anti-bot measures
+                        if any(marker in html_content.lower() for marker in ['captcha', 'blocked', 'rate limit']):
+                            logger.warning("Possible anti-bot measure detected")
+                            logger.info(f"Response might indicate we're being blocked")
+                            continue
+                        
                         try:
                             # Save HTML content for debugging
                             debug_file = f"debug_html_{neighborhood_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
