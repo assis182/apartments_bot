@@ -174,16 +174,25 @@ def is_listing_changed(old_listing, new_listing):
 def should_send_daily_digest():
     """Check if it's time to send the daily digest."""
     if not os.getenv('CONTAINER_ENV'):
-        return False  # Never send daily digest in local mode
+        logger.info("Skipping daily digest - running in local mode")
+        return False
         
     last_digest = load_last_digest_time()
     if not last_digest:
+        logger.info("No previous digest found - will send digest")
         return True
         
     now = datetime.now()
     # If it's a new day and it's after 9 AM Israel time (UTC+3)
     israel_hour = (now.hour + 3) % 24  # Convert to Israel time
-    return (now.date() > last_digest.date() and israel_hour >= 9)
+    should_send = (now.date() > last_digest.date() and israel_hour >= 9)
+    
+    if should_send:
+        logger.info("Will send daily digest - new day and after 9 AM Israel time")
+    else:
+        logger.info(f"Skipping daily digest - last sent on {last_digest.date()}, current Israel hour: {israel_hour}")
+    
+    return should_send
 
 def format_daily_digest(tracked_listings):
     """Format the daily digest message."""
@@ -271,33 +280,38 @@ def main():
     try:
         # Log startup information
         logger.info("="*50)
-        logger.info("Starting Yad2 Scraper Worker Run")
+        logger.info("Starting Yad2 Scraper")
         verify_worker_run()
         
         # Log environment information
-        logger.info(f"Running in container: {os.getenv('CONTAINER_ENV') == 'true'}")
+        is_container = os.getenv('CONTAINER_ENV') == 'true'
+        logger.info(f"Running in container: {is_container}")
+        if not is_container:
+            logger.info("Running in local mode - notifications will be suppressed")
         logger.info(f"Current directory: {os.getcwd()}")
         logger.info(f"Data directory: {get_data_dir()}")
-        logger.info(f"Environment variables:")
-        for key in ['TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID', 'CONTAINER_ENV']:
-            logger.info(f"  {key}: {'✓ Set' if os.getenv(key) else '✗ Not set'}")
+        
+        # Log environment variables status
+        env_vars = {
+            'TELEGRAM_TOKEN': '✓ Set' if os.getenv('TELEGRAM_TOKEN') else '✗ Not set',
+            'TELEGRAM_CHAT_ID': '✓ Set' if os.getenv('TELEGRAM_CHAT_ID') else '✗ Not set',
+            'CONTAINER_ENV': '✓ Set' if os.getenv('CONTAINER_ENV') else '✗ Not set',
+            'YAD2_API_URL': os.getenv('YAD2_API_URL', 'https://www.yad2.co.il')
+        }
+        logger.info("Environment configuration:")
+        for key, value in env_vars.items():
+            logger.info(f"  {key}: {value}")
         
         # Load environment variables
         load_dotenv()
         
         # Create scraper instance
         scraper = Yad2Scraper()
+        logger.info("Scraper initialized")
         
         # Create notifier instance
         notifier = TelegramNotifier()
-        
-        # Try to send a startup notification
-        try:
-            startup_msg = "🤖 Yad2 Scraper started successfully!"
-            notifier.notify_new_listings_sync([{"custom_message": startup_msg}])
-            logger.info("Startup notification sent successfully")
-        except Exception as e:
-            logger.error(f"Failed to send startup notification: {str(e)}")
+        logger.info("Notifier initialized")
         
         # Load tracked listings
         tracked_listings = load_tracked_listings()
@@ -353,6 +367,8 @@ def main():
             digest_message = format_daily_digest(tracked_listings)
             notifier.notify_new_listings_sync([{"custom_message": digest_message}])
             save_last_digest_time(datetime.now())
+        else:
+            logger.info("Skipping daily digest - not the right time or running locally")
         
         # Send notifications for changes
         notifications = []
@@ -390,9 +406,13 @@ def main():
         
         # Send all notifications as one message
         if notifications:
-            notifier.notify_new_listings_sync([{"custom_message": "\n\n".join(notifications)}])
+            if is_container:
+                logger.info("Sending notifications for changes...")
+                notifier.notify_new_listings_sync([{"custom_message": "\n\n".join(notifications)}])
+            else:
+                logger.info("Changes detected but not sending notifications (running locally)")
         else:
-            logger.info("No changes in listings")
+            logger.info("No changes to notify about")
         
         # Save current results to a file with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
