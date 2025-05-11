@@ -167,9 +167,22 @@ class Yad2Scraper:
                         )
                         
                         logger.info(f"Response status code: {response.status_code}")
+                        logger.debug(f"Response headers: {dict(response.headers)}")
                         
                         if response.status_code == 200:
                             try:
+                                # Log the first 500 characters of the response for debugging
+                                response_text = response.text
+                                logger.debug(f"Response preview: {response_text[:500]}")
+                                
+                                # Check for common anti-bot indicators
+                                if "captcha" in response_text.lower() or "shield" in response_text.lower():
+                                    logger.error("Anti-bot protection detected in response")
+                                    if retry < max_retries - 1:
+                                        logger.info("Waiting longer before retry...")
+                                        time.sleep(random.uniform(10, 15))  # Increased wait time
+                                        continue
+                                
                                 data = response.json()
                                 
                                 # Check if we got a valid response
