@@ -152,7 +152,11 @@ class Yad2Scraper:
                             r'window\.__PRELOADED_STATE__\s*=\s*({.*?});',
                             r'window\.__APOLLO_STATE__\s*=\s*({.*?});',
                             r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
-                            r'<script type="application/json" id="__NEXT_DATA__">(.*?)</script>'
+                            r'<script type="application/json" id="__NEXT_DATA__">(.*?)</script>',
+                            # Add more specific patterns
+                            r'<script>window\.__NEXT_DATA__\s*=\s*({.*?})</script>',
+                            r'<script>window\.__INITIAL_DATA__\s*=\s*({.*?})</script>',
+                            r'<script>window\.__FEED_DATA__\s*=\s*({.*?})</script>'
                         ]
                         
                         data_found = False
@@ -160,6 +164,7 @@ class Yad2Scraper:
                             matches = re.findall(pattern, html_content, re.DOTALL)
                             if matches:
                                 logger.debug(f"Found data with pattern: {pattern}")
+                                logger.debug(f"First 200 chars of match: {matches[0][:200]}")
                                 try:
                                     # For patterns that include the script tag, we need to parse the content
                                     if 'script' in pattern:
@@ -189,6 +194,9 @@ class Yad2Scraper:
                                     break
                                 except json.JSONDecodeError as e:
                                     logger.error(f"Error parsing JSON: {e}")
+                                    # Log a sample of the problematic JSON
+                                    sample = matches[0][:200] + "..." if len(matches[0]) > 200 else matches[0]
+                                    logger.error(f"Problem JSON sample: {sample}")
                                     continue
                                 except Exception as e:
                                     logger.error(f"Error parsing listings for {neighborhood_name}: {str(e)}")
@@ -196,20 +204,34 @@ class Yad2Scraper:
                         
                         if not data_found:
                             logger.warning(f"Could not find any known data patterns in HTML for {neighborhood_name}")
-                            logger.debug("Available patterns in HTML:")
-                            for pattern in patterns:
-                                matches = re.findall(pattern, html_content, re.DOTALL)
-                                logger.debug(f"Pattern {pattern}: {len(matches)} matches")
+                            # Log some debug info about the HTML content
+                            logger.debug("HTML Content Stats:")
+                            logger.debug(f"HTML length: {len(html_content)} chars")
+                            logger.debug(f"Contains __NEXT_DATA__: {'__NEXT_DATA__' in html_content}")
+                            logger.debug(f"Contains __INITIAL_STATE__: {'__INITIAL_STATE__' in html_content}")
+                            logger.debug(f"Contains __PRELOADED_STATE__: {'__PRELOADED_STATE__' in html_content}")
+                            # Log a sample of the HTML around potential data areas
+                            for marker in ['__NEXT_DATA__', '__INITIAL_STATE__', '__PRELOADED_STATE__']:
+                                idx = html_content.find(marker)
+                                if idx != -1:
+                                    start = max(0, idx - 100)
+                                    end = min(len(html_content), idx + 100)
+                                    logger.debug(f"Context around {marker}:")
+                                    logger.debug(html_content[start:end])
                     else:
                         logger.error(f"Error: Got status code {response.status_code}")
                         logger.debug(f"Response headers: {response.headers}")
+                        logger.debug(f"Response content: {response.text[:500]}...")  # Log first 500 chars
                     
                 except requests.exceptions.RequestException as e:
                     logger.error(f"Request error for {neighborhood_name}: {str(e)}")
                     continue
                 
-                # Add a small delay between requests
-                time.sleep(random.uniform(2, 4))  # Increased delay
+                # Add a longer delay between requests when running in cron
+                if os.getenv('CONTAINER_ENV') == 'true':
+                    time.sleep(random.uniform(4, 6))  # Longer delay in container
+                else:
+                    time.sleep(random.uniform(2, 4))  # Normal delay locally
             
             if not any_request_succeeded:
                 logger.error("All requests failed - keeping existing listings")
