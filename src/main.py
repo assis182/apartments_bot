@@ -5,6 +5,7 @@ from src.notifier import TelegramNotifier
 import json
 from datetime import datetime, timedelta
 import logging
+import argparse
 from src.utils import (
     logger,
     get_data_dir,
@@ -14,8 +15,18 @@ from src.utils import (
     load_last_digest_time,
     save_last_digest_time,
     verify_worker_run,
-    verify_cron_run
+    verify_cron_run,
+    load_exclusions,
+    add_to_exclusions,
+    remove_from_exclusions,
+    is_excluded,
+    add_address_to_exclusions,
+    add_street_to_exclusions
 )
+import time
+import asyncio
+import requests
+import glob
 
 def print_listing(listing):
     """Print a single listing in a readable format."""
@@ -49,6 +60,67 @@ def print_listing(listing):
     print(f"Images: {len(listing['images'])} images available")
     print(f"Cover image: {listing['cover_image']}")
 
+def manage_exclusions(args):
+    """Handle exclusion list management commands."""
+    if args.command == 'list':
+        exclusions = load_exclusions()
+        if not exclusions:
+            print("No excluded listings.")
+            return
+            
+        print("\nExcluded Listings:")
+        print("="*80)
+        
+        # Handle both list and dictionary formats
+        items = exclusions.values() if isinstance(exclusions, dict) else exclusions
+        
+        for item in items:
+            address = item.get('address', {})
+            if item.get('exclude_entire_street'):
+                print(f"\nExcluded Street: {address.get('street', 'N/A')}")
+            else:
+                print(f"\nID: {item['id']}" if item.get('id') else "\nManually excluded address")
+                print(f"Address: {address.get('full', 'N/A')}")
+            print(f"Excluded at: {item.get('excluded_at', 'N/A')}")
+            print(f"Reason: {item.get('reason', 'N/A')}")
+            print("-"*40)
+            
+    elif args.command == 'remove':
+        if not args.id and not (args.street and args.number):
+            print("Error: Please provide either a listing ID or street and number to remove")
+            return
+            
+        if args.id:
+            remove_from_exclusions(args.id)
+            print(f"Removed listing {args.id} from exclusions list")
+        else:
+            full_address = f"{args.street} {args.number}".strip()
+            remove_from_exclusions(full_address)
+            print(f"Removed address {full_address} from exclusions list")
+            
+    elif args.command == 'add':
+        if args.street and args.number:
+            # Add specific address
+            add_address_to_exclusions(args.street, args.number, args.reason)
+            print(f"Added address {args.street} {args.number} to exclusions list")
+        elif args.street and args.entire_street:
+            # Add entire street
+            add_street_to_exclusions(args.street, args.reason)
+            print(f"Added entire street {args.street} to exclusions list")
+        elif args.id:
+            # Add by listing ID
+            tracked_listings = load_tracked_listings()
+            listing_id = str(args.id)
+            
+            if listing_id in tracked_listings:
+                listing = tracked_listings[listing_id]['details']
+                add_to_exclusions(listing, reason=args.reason or "Manually excluded")
+                print(f"Added listing {listing_id} to exclusions list")
+            else:
+                print(f"Error: Listing {listing_id} not found in tracked listings")
+        else:
+            print("Error: Please provide either a listing ID or street and number, or use --entire-street with --street")
+
 def is_listing_changed(old_listing, new_listing):
     """Check if a listing has been updated."""
     # First check price separately to track price changes
@@ -70,24 +142,32 @@ def is_listing_changed(old_listing, new_listing):
 
 def should_send_daily_digest():
     """Check if it's time to send the daily digest."""
-    last_digest = load_last_digest_time()
-    
-    # If no previous digest, always send
-    if not last_digest:
-        logger.info("No previous digest found - will send digest")
+    last_digest_time = load_last_digest_time()
+    if not last_digest_time:
+        return True
+        
+    now = datetime.now()
+    try:
+        last_digest_dt = datetime.fromisoformat(last_digest_time)
+    except (TypeError, ValueError):
+        # If there's an error parsing the time, assume we should send the digest
         return True
     
+    # Check if it's been more than 24 hours OR if it's a new day and after 10 AM
+    return ((now - last_digest_dt).total_seconds() >= 24 * 60 * 60 or 
+            (now.date() > last_digest_dt.date() and now.hour >= 10))
+
+def is_update_mode():
+    """Check if we're in update mode (after daily digest was sent today)."""
+    last_digest_time = load_last_digest_time()
+    if not last_digest_time:
+        return False
+        
     now = datetime.now()
-    # If it's a new day and it's after 9 AM Israel time (UTC+3)
-    israel_hour = (now.hour + 3) % 24  # Convert to Israel time
-    should_send = (now.date() > last_digest.date() and israel_hour >= 9)
+    last_digest_dt = datetime.fromisoformat(last_digest_time)
     
-    if should_send:
-        logger.info("Will send daily digest - new day and after 9 AM Israel time")
-    else:
-        logger.info(f"Skipping daily digest - already sent today at {last_digest.strftime('%H:%M')} (Israel time)")
-    
-    return should_send
+    # We're in update mode if we already sent a digest today
+    return now.date() == last_digest_dt.date()
 
 def format_daily_digest(tracked_listings, notifier):
     """Format the daily digest message."""
@@ -102,9 +182,15 @@ def format_daily_digest(tracked_listings, notifier):
     # Sort by first_seen date (most recent first)
     listings_with_dates.sort(key=lambda x: x['first_seen'], reverse=True)
     
-    message = ["📋 <b>Daily Apartments Digest</b>\n"]
-    message.append(f"Total active listings: {len(listings_with_dates)}\n")
+    # Create header message
+    header = f"Total active listings: {len(listings_with_dates)}\n\n"
     
+    # If no listings, return just the header
+    if not listings_with_dates:
+        return [header]
+    
+    # Format all listings into a single message first
+    formatted_listings = []
     for listing_info in listings_with_dates:
         listing = listing_info['details']
         first_seen_date = datetime.fromisoformat(listing_info['first_seen']).strftime("%Y-%m-%d %H:%M")
@@ -112,15 +198,37 @@ def format_daily_digest(tracked_listings, notifier):
         # Format the basic listing message
         listing_msg = notifier.format_listing_message(listing)
         
-        # Add first seen date
-        listing_msg += f"\n🕒 First seen: {first_seen_date}"
+        # Add first seen date only if Yad2 date is not available
+        if not listing.get('details', {}).get('date_added'):
+            listing_msg += f"\n🕒 First seen by script: {first_seen_date}"
+        listing_msg += "\n" + "-" * 30
         
-        message.append(listing_msg)
-        message.append("-" * 30)
+        formatted_listings.append(listing_msg)
     
-    return "\n".join(message)
+    # Now split into chunks of reasonable size (about 2000 characters each)
+    # to avoid Telegram's message length limits
+    messages = []
+    current_chunk = [header]
+    current_length = len(header)
+    
+    for listing in formatted_listings:
+        # Check if adding this listing would exceed Telegram's limit
+        if current_length + len(listing) > 2000:  # Reduced from 4000 to 2000 for safety
+            # Start a new chunk
+            messages.append("\n\n".join(current_chunk))
+            current_chunk = [listing]
+            current_length = len(listing)
+        else:
+            current_chunk.append(listing)
+            current_length += len(listing)
+    
+    # Add any remaining listings
+    if current_chunk:
+        messages.append("\n\n".join(current_chunk))
+    
+    return messages
 
-def format_change_message(listing_id, old_listing, new_listing, change_type):
+def format_change_message(listing_id, old_listing, new_listing, change_type, notifier):
     """Format a message for a listing change."""
     if change_type == 'price':
         old_price = old_listing.get('price', 0)
@@ -137,161 +245,218 @@ def format_change_message(listing_id, old_listing, new_listing, change_type):
     
     return None  # For other types of changes, we'll use the default notification format
 
-def main():
-    """Main entry point for the scraper."""
+async def verify_listing_removed(listing_id, url):
+    """Verify if a listing is actually removed by checking its URL."""
     try:
-        # Log startup information
-        logger.info("="*50)
-        logger.info("Starting Yad2 Scraper")
-        verify_worker_run()
-        
-        # Log environment information
-        is_container = os.getenv('CONTAINER_ENV') == 'true'
-        logger.info(f"Running in container: {is_container}")
-        logger.info(f"Current directory: {os.getcwd()}")
-        logger.info(f"Data directory: {get_data_dir()}")
-        
-        # Log environment variables status
-        env_vars = {
-            'TELEGRAM_TOKEN': '✓ Set' if os.getenv('TELEGRAM_TOKEN') else '✗ Not set',
-            'TELEGRAM_CHAT_ID': '✓ Set' if os.getenv('TELEGRAM_CHAT_ID') else '✗ Not set',
-            'CONTAINER_ENV': '✓ Set' if os.getenv('CONTAINER_ENV') else '✗ Not set',
-            'YAD2_API_URL': os.getenv('YAD2_API_URL', 'https://www.yad2.co.il')
-        }
-        logger.info("Environment configuration:")
-        for key, value in env_vars.items():
-            logger.info(f"  {key}: {value}")
-        
-        # Load environment variables
-        load_dotenv()
-        
-        # Create scraper instance
-        scraper = Yad2Scraper()
-        logger.info("Scraper initialized")
-        
-        # Create notifier instance
-        notifier = TelegramNotifier()
-        logger.info("Notifier initialized")
-        
-        # Load tracked listings
-        tracked_listings = load_tracked_listings()
-        logger.info(f"Loaded {len(tracked_listings)} tracked listings")
-        
-        logger.info("Searching for listings...")
-        current_listings = scraper.search_listings()
-        
-        # Convert current listings to a dictionary for easier comparison
-        current_listings_dict = {str(listing['id']): listing for listing in current_listings}
-        
-        # Find new, updated, and removed listings
-        new_listings = []
-        updated_listings = []
-        removed_listings = []
-        price_changes = []  # New list specifically for price changes
-        
-        # Only process removals if we successfully got listings
-        if current_listings:
-            # Check for new and updated listings
-            for listing_id, listing in current_listings_dict.items():
-                if listing_id not in tracked_listings:
-                    new_listings.append(listing)
-                    tracked_listings[listing_id] = {
-                        'first_seen': datetime.now().isoformat(),
-                        'details': listing
-                    }
-                else:
-                    changed, change_type = is_listing_changed(tracked_listings[listing_id]['details'], listing)
-                    if changed:
-                        if change_type == 'price':
-                            price_changes.append((listing_id, tracked_listings[listing_id]['details'], listing))
-                        updated_listings.append(listing)
-                        tracked_listings[listing_id]['details'] = listing
-            
-            # Check for removed listings
-            for listing_id, tracked_info in list(tracked_listings.items()):
-                if listing_id not in current_listings_dict:
-                    removed_listings.append(tracked_info['details'])
-                    del tracked_listings[listing_id]
-        else:
-            logger.warning("No listings found in current search - keeping existing listings")
-        
-        # Save updated tracked listings
-        save_tracked_listings(tracked_listings)
-        
-        # Print summary
-        logger.info(f"Found {len(current_listings)} total listings")
-        logger.info(f"Found {len(new_listings)} new listings")
-        logger.info(f"Found {len(updated_listings)} updated listings")
-        logger.info(f"Found {len(removed_listings)} removed listings")
-        logger.info(f"Found {len(price_changes)} price changes")
-        
-        # Check if we should send a daily digest
-        if should_send_daily_digest():
-            logger.info("Sending daily digest...")
-            digest_message = format_daily_digest(tracked_listings, notifier)
-            notifier.notify_new_listings_sync([{"custom_message": digest_message}])
-            save_last_digest_time(datetime.now())
-        
-        # Send notifications for changes
-        notifications = []
-        
-        # Format new listings
-        if new_listings:
-            notifications.append("🆕 <b>New Listings:</b>")
-            for listing in new_listings:
-                notifications.append(notifier.format_listing_message(listing))
-        
-        # Format price changes (send these immediately, even if there are no other changes)
-        if price_changes:
-            if notifications:  # Add separator if we had previous listings
-                notifications.append("\n" + "="*30 + "\n")
-            notifications.append("💰 <b>Price Changes:</b>")
-            for listing_id, old_listing, new_listing in price_changes:
-                notifications.append(format_change_message(listing_id, old_listing, new_listing, 'price'))
-        
-        # Format other updated listings
-        if updated_listings:
-            if notifications:  # Add separator if we had previous listings
-                notifications.append("\n" + "="*30 + "\n")
-            notifications.append("📝 <b>Updated Listings:</b>")
-            for listing in updated_listings:
-                if listing not in [new_listing for _, _, new_listing in price_changes]:
-                    notifications.append(notifier.format_listing_message(listing))
-        
-        # Format removed listings
-        if removed_listings and current_listings:  # Only show removals if we got listings
-            if notifications:  # Add separator if we had previous listings
-                notifications.append("\n" + "="*30 + "\n")
-            notifications.append("❌ <b>Removed Listings:</b>")
-            for listing in removed_listings:
-                notifications.append(notifier.format_listing_message(listing))
-        
-        # Send all notifications as one message
-        if notifications:
-            logger.info("Sending notifications for changes...")
-            notifier.notify_new_listings_sync([{"custom_message": "\n\n".join(notifications)}])
-        else:
-            logger.info("No changes to notify about")
-        
-        # Save current results to a file with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"listings_{timestamp}.json"
-        
-        with open(get_file_path(filename), 'w', encoding='utf-8') as f:
-            json.dump(current_listings, f, ensure_ascii=False, indent=2)
-        
-        logger.info(f"Results saved to {filename}")
-        
+        response = requests.get(url, timeout=10)
+        # If we get a 404 or the page indicates the listing is removed, then it's truly removed
+        if response.status_code == 404:
+            return True
+        # Check if the page contains text indicating the listing is removed
+        if "המודעה לא קיימת" in response.text or "המודעה הוסרה" in response.text:
+            return True
+        return False
     except Exception as e:
-        logger.error(f"Fatal error in main: {str(e)}", exc_info=True)
-        # Try to send error notification
-        try:
-            error_msg = f"⚠️ Yad2 Scraper Error:\n\n{str(e)}"
-            notifier.notify_new_listings_sync([{"custom_message": error_msg}])
-        except:
-            logger.error("Failed to send error notification", exc_info=True)
-        raise
+        logger.error(f"Error verifying listing {listing_id}: {str(e)}")
+        # If we can't verify, assume it's not removed to avoid false removals
+        return False
+
+def cleanup_old_listings_files():
+    """Delete all but the most recent listings_*.json file in the data folder."""
+    data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
+    listings_files = glob.glob(os.path.join(data_dir, 'listings_*.json'))
+    if len(listings_files) > 1:
+        # Sort files by modification time (newest first) and remove all but the first one
+        listings_files.sort(key=os.path.getmtime, reverse=True)
+        for old_file in listings_files[1:]:
+            os.remove(old_file)
+            logger.info(f"Removed old listings file: {old_file}")
+
+async def main():
+    """Main entry point for the scraper."""
+    # Load environment variables
+    load_dotenv()
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Yad2 Apartment Scraper')
+    parser.add_argument('--daily-digest', action='store_true', help='Force send daily digest')
+    
+    subparsers = parser.add_subparsers(dest='mode', help='Operation mode')
+    
+    # Exclusion management commands
+    exclusions_parser = subparsers.add_parser('exclusions', help='Manage exclusion list')
+    exclusions_parser.add_argument('command', choices=['list', 'remove', 'add'], help='Command to execute')
+    exclusions_parser.add_argument('--id', help='Listing ID for add/remove commands')
+    exclusions_parser.add_argument('--street', help='Street name for address-based exclusion')
+    exclusions_parser.add_argument('--number', help='Street number for address-based exclusion')
+    exclusions_parser.add_argument('--reason', help='Reason for excluding the listing')
+    exclusions_parser.add_argument('--entire-street', action='store_true', help='Exclude the entire street')
+    
+    args = parser.parse_args()
+    
+    # Handle exclusion management commands
+    if args.mode == 'exclusions':
+        manage_exclusions(args)
+        return
+        
+    # Initialize components
+    logger.info("Initializing scraper...")
+    scraper = Yad2Scraper()
+    logger.info("Scraper initialized")
+    
+    notifier = TelegramNotifier()
+    logger.info("Notifier initialized")
+    
+    # Load tracked listings
+    tracked_listings = load_tracked_listings()
+    logger.info(f"Loaded {len(tracked_listings)} tracked listings")
+    
+    # Search for new listings
+    logger.info("Searching for listings...")
+    new_listings = scraper.search_listings()
+    
+    # Check if we should send daily digest first
+    if args.daily_digest or should_send_daily_digest():
+        logger.info("Sending daily digest...")
+        await notifier.send_daily_digest(tracked_listings)
+        save_last_digest_time(datetime.now())
+        # In daily digest mode, we don't need to send individual notifications
+        # Just update the tracked listings
+        for listing in new_listings:
+            if not is_excluded(listing):
+                listing_id = listing['id']
+                tracked_listings[listing_id] = {
+                    'details': listing,
+                    'first_seen': datetime.now().isoformat(),
+                    'last_updated': datetime.now().isoformat()
+                }
+        changes = {
+            'new': [],
+            'updated': [],
+            'removed': [],
+            'price_changes': []
+        }
+    else:
+        # We're in update mode, only track changes
+        changes = {
+            'new': [],
+            'updated': [],
+            'removed': [],
+            'price_changes': []
+        }
+        
+        # Track removed listings
+        current_ids = set(listing['id'] for listing in new_listings)
+        tracked_ids = set(tracked_listings.keys())
+        potentially_removed_ids = tracked_ids - current_ids
+        
+        # Verify each potentially removed listing
+        for listing_id in potentially_removed_ids:
+            listing = tracked_listings[listing_id]['details']
+            url = listing.get('link')
+            if url and await verify_listing_removed(listing_id, url):
+                changes['removed'].append({
+                    'id': listing_id,
+                    'details': listing
+                })
+                del tracked_listings[listing_id]
+            else:
+                logger.info(f"Listing {listing_id} not found in API but still exists on Yad2, keeping it tracked")
+        
+        # Process new and updated listings
+        for listing in new_listings:
+            listing_id = listing['id']
+            
+            # Skip if listing is excluded
+            if is_excluded(listing):
+                continue
+                
+            if listing_id not in tracked_listings:
+                # New listing
+                tracked_listings[listing_id] = {
+                    'details': listing,
+                    'first_seen': datetime.now().isoformat(),
+                    'last_updated': datetime.now().isoformat()
+                }
+                changes['new'].append(listing)
+            else:
+                # Check for updates
+                old_listing = tracked_listings[listing_id]['details']
+                is_changed, change_type = is_listing_changed(old_listing, listing)
+                
+                if is_changed:
+                    if change_type == 'price':
+                        changes['price_changes'].append({
+                            'old': old_listing,
+                            'new': listing
+                        })
+                    else:
+                        changes['updated'].append({
+                            'old': old_listing,
+                            'new': listing
+                        })
+                        
+                    tracked_listings[listing_id]['details'] = listing
+                    tracked_listings[listing_id]['last_updated'] = datetime.now().isoformat()
+    
+    # Log changes
+    logger.info("Changes detected:")
+    logger.info(f"  • {len(changes['new'])} new listings")
+    logger.info(f"  • {len(changes['updated'])} updated listings")
+    logger.info(f"  • {len(changes['removed'])} removed listings")
+    logger.info(f"  • {len(changes['price_changes'])} price changes")
+    
+    # Send notifications for changes
+    logger.info("Sending notifications for changes...")
+    messages = []
+    
+    # New listings
+    for listing in changes['new']:
+        messages.append({
+            'listing': listing,
+            'type': 'new'
+        })
+    
+    # Updated listings
+    for change in changes['updated']:
+        messages.append({
+            'listing': change['new'],
+            'old_listing': change['old'],
+            'type': 'update'
+        })
+    
+    # Price changes
+    for change in changes['price_changes']:
+        messages.append({
+            'listing': change['new'],
+            'old_listing': change['old'],
+            'type': 'price_change'
+        })
+    
+    # Removed listings
+    for removed in changes['removed']:
+        messages.append({
+            'listing': removed['details'],
+            'type': 'removed'
+        })
+    
+    # Send notifications
+    if messages:
+        await notifier.send_messages(messages)
+    
+    # Save updated tracked listings
+    save_tracked_listings(tracked_listings)
+    
+    # Save results to file
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    results_file = get_file_path(f"listings_{timestamp}.json")
+    with open(results_file, 'w') as f:
+        json.dump(new_listings, f, indent=2, ensure_ascii=False)
+    logger.info(f"Results saved to listings_{timestamp}.json")
+
+    # Clean up old listings files
+    cleanup_old_listings_files()
 
 if __name__ == "__main__":
     verify_cron_run()
-    main() 
+    asyncio.run(main()) 

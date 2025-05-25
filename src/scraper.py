@@ -7,7 +7,7 @@ import re
 import os
 from datetime import datetime
 import logging
-from src.utils import get_data_dir, logger
+from src.utils import get_data_dir, logger, setup_logging, load_tracked_listings, save_tracked_listings, is_excluded, is_street_excluded
 import sys
 import pickle
 from pathlib import Path
@@ -62,51 +62,41 @@ class Yad2Scraper:
                 if self.config.USE_PROXY:
                     kwargs['proxies'] = self._get_next_proxy()
                 
-                # Add timeout
+                # Add timeout and allow redirects
                 kwargs['timeout'] = self.config.REQUEST_TIMEOUT
+                kwargs['allow_redirects'] = True
                 
                 # Make the request
                 response = self.session.request(method, url, **kwargs)
+                response.raise_for_status()  # Raise an error for bad status codes
                 
-                # Check for anti-bot detection
-                if self._is_bot_detected(response):
-                    logger.warning(f"Anti-bot detection triggered (attempt {attempt + 1}/{max_retries})")
-                    self.failed_attempts += 1
-                    self._handle_bot_detection()
-                    continue
+                # Check if response is valid JSON for API endpoints
+                if url.endswith('/getFeedIndex/realestate/rent'):
+                    try:
+                        response.json()
+                    except json.JSONDecodeError:
+                        logger.warning(f"Invalid JSON response (attempt {attempt + 1}/{max_retries})")
+                        self.failed_attempts += 1
+                        self._handle_request_failure()
+                        continue
                 
                 # Reset failed attempts on success
                 self.failed_attempts = 0
                 return response
                 
-            except (RequestException, ProxyError) as e:
+            except Exception as e:
                 logger.error(f"Request failed (attempt {attempt + 1}/{max_retries}): {str(e)}")
                 if attempt < max_retries - 1:
                     self._handle_request_failure()
                     continue
                 raise
 
-    def _is_bot_detected(self, response):
-        """Check if the response indicates bot detection."""
-        if response.status_code != 200:
-            return True
-            
-        # Check response content for bot detection indicators
-        content_lower = response.text.lower()
-        bot_indicators = [
-            'captcha',
-            'shield',
-            'automated',
-            'bot',
-            'security check',
-            'verify you are human'
-        ]
+    def _handle_request_failure(self):
+        """Handle request failure by rotating proxy and waiting."""
+        if self.config.USE_PROXY:
+            self._get_next_proxy()
         
-        return any(indicator in content_lower for indicator in bot_indicators)
-
-    def _handle_bot_detection(self):
-        """Handle bot detection by adjusting behavior."""
-        # Increase delays based on number of failed attempts
+        # Calculate delay based on failed attempts
         base_delay = self.config.RETRY_DELAY
         if self.config.PROGRESSIVE_DELAYS:
             base_delay *= (1 + self.failed_attempts)
@@ -118,12 +108,6 @@ class Yad2Scraper:
         
         # Rotate browser profile
         self._setup_session()
-
-    def _handle_request_failure(self):
-        """Handle request failure by rotating proxy and waiting."""
-        if self.config.USE_PROXY:
-            self._get_next_proxy()
-        time.sleep(self.config.RETRY_DELAY)
 
     def _load_cookies(self):
         """Load cookies from file if they exist."""
@@ -157,200 +141,402 @@ class Yad2Scraper:
             logger.error(f"Error saving cookies: {str(e)}")
 
     def _setup_session(self):
-        """Setup the session with mobile app headers."""
-        # Generate a consistent device ID
-        device_id = self._generate_device_id()
-        
-        # Simulate Yad2's mobile app
+        """Setup the session with realistic browser headers."""
         self.session.headers.update({
-            'User-Agent': 'Yad2 Android App v5.0.0',
-            'X-Yad2-App-Version': '5.0.0',
-            'X-Yad2-Device-Id': device_id,
-            'X-Yad2-Device-Type': 'android',
-            'Accept': 'application/json',
-            'Accept-Language': 'he-IL',
-            'Accept-Encoding': 'gzip',
-            'Connection': 'Keep-Alive',
-            'Content-Type': 'application/json; charset=UTF-8',
-            'Host': 'www.yad2.co.il',
-            'Cache-Control': 'no-cache'
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9,he;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Cache-Control': 'max-age=0',
+            'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"macOS"',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Upgrade-Insecure-Requests': '1'
         })
-        logger.debug("Session headers configured for mobile app")
-
-    def _generate_device_id(self):
-        """Generate a consistent device ID based on container/environment."""
-        # Use environment variables or system info to generate a consistent ID
-        system_info = f"{os.uname().nodename}-{os.uname().machine}"
-        device_id = hashlib.md5(system_info.encode()).hexdigest()
-        return device_id
 
     def _simulate_browser_behavior(self):
-        """Simulate mobile app initialization."""
-        logger.debug("Simulating mobile app behavior")
-        
+        """Simulate realistic browser behavior."""
         try:
-            # Initial app launch request
-            launch_response = self._make_request('GET',
-                'https://www.yad2.co.il/api/v2/app/init',
-                headers={
-                    'Accept': 'application/json',
-                }
-            )
-            time.sleep(random.uniform(1, 2))
-
-            # Get feed token
-            token_response = self._make_request('GET',
-                'https://www.yad2.co.il/api/v2/feed/token',
-                headers={
-                    'Accept': 'application/json',
-                }
-            )
+            # Add some randomness to timing
+            base_delay = random.uniform(1.5, 3)
             
-            if token_response and token_response.status_code == 200:
-                try:
-                    token_data = token_response.json()
-                    if 'token' in token_data:
-                        self.session.headers.update({
-                            'X-Yad2-Feed-Token': token_data['token']
-                        })
-                except json.JSONDecodeError:
-                    pass
+            # Visit the homepage first
+            logger.debug("Visiting homepage")
+            home_response = self._make_request('GET', self.config.YAD2_API_URL)
+            time.sleep(base_delay * random.uniform(1.0, 1.5))
 
-            time.sleep(random.uniform(1, 2))
+            # Visit some random pages first
+            random_pages = [
+                '/realestate',
+                '/realestate/forsale',
+                '/realestate/commercial',
+                '/vehicles',
+                '/products'
+            ]
+            for page in random.sample(random_pages, 2):
+                logger.debug(f"Visiting random page: {page}")
+                self._make_request('GET', f"{self.config.YAD2_API_URL}{page}")
+                time.sleep(base_delay * random.uniform(0.8, 1.2))
+
+            # Then visit the real estate section
+            logger.debug("Visiting real estate section")
+            realestate_response = self._make_request(
+                'GET',
+                f"{self.config.YAD2_API_URL}/realestate/rent"
+            )
+            time.sleep(base_delay * random.uniform(1.2, 1.8))
+
+            # Visit the apartments category with search params
+            logger.debug("Visiting apartments category")
+            search_params = {
+                'propertyGroup': 'apartments',
+                'city': '5000',  # Tel Aviv
+                'property': '1'  # Apartment
+            }
+            apartments_response = self._make_request(
+                'GET',
+                f"{self.config.YAD2_API_URL}/realestate/rent",
+                params=search_params
+            )
+            time.sleep(base_delay * random.uniform(1.5, 2.0))
+
+            # Get the initial feed data
+            logger.debug("Getting initial feed data")
+            initial_feed_response = self._make_request(
+                'GET',
+                f"{self.config.YAD2_API_URL}/api/pre-load/getFeedIndex/realestate/rent",
+                params={'propertyGroup': 'apartments', 'forceLdLoad': True}
+            )
+            time.sleep(base_delay * random.uniform(1.0, 1.5))
+
+            # Extract and update CSRF token and other cookies
+            for response in [home_response, realestate_response, apartments_response, initial_feed_response]:
+                if response and response.status_code == 200 and 'text/html' in response.headers.get('Content-Type', ''):
+                    match = re.search(r'csrf-token"\s+content="([^"]+)"', response.text)
+                    if match:
+                        csrf_token = match.group(1)
+                        self.session.headers.update({
+                            'X-CSRF-TOKEN': csrf_token,
+                        })
+                        logger.debug(f"Found CSRF token: {csrf_token}")
+                        break
+
+            # Save cookies for future use
+            self._save_cookies()
 
         except Exception as e:
-            logger.error(f"Error during mobile app simulation: {str(e)}", exc_info=True)
+            logger.error(f"Error during browser simulation: {str(e)}")
+            raise
 
     def search_listings(self):
-        """Search for listings using the mobile API."""
-        try:
-            # Log environment info
-            is_container = os.getenv('CONTAINER_ENV') == 'true'
-            logger.info(f"Running in container: {is_container}")
-            logger.info(f"Python version: {sys.version}")
-            logger.info(f"Current time: {datetime.now().isoformat()}")
-            logger.info(f"Current timezone: {time.tzname}")
+        """Search for listings in all configured neighborhoods."""
+        logger.info("Searching for listings...")
+        
+        # Force session refresh and browser simulation
+        self.session = requests.Session()
+        self._setup_session()
+        self._simulate_browser_behavior()
+        
+        all_listings = []
+        
+        # Search in each configured neighborhood
+        for neighborhood_id in self.config.NEIGHBORHOODS:
+            logger.info(f"Searching in neighborhood ID {neighborhood_id}...")
             
-            # Initialize mobile app environment
-            self._simulate_browser_behavior()
+            # Prepare search parameters
+            params = {
+                'topArea': self.config.TOP_AREA,
+                'area': self.config.AREA,
+                'city': self.config.CITY,
+                'propertyGroup': 'apartments',
+                'property': self.config.PROPERTY_TYPE,
+                'rooms': self.config.ROOMS_RANGE,
+                'price': self.config.PRICE_RANGE,
+                'parking': self.config.PARKING,
+                'shelter': self.config.SHELTER,
+                'neighborhood': neighborhood_id,
+                'forceLdLoad': 'true'
+            }
             
-            all_listings = []
-            any_request_succeeded = False
-            
-            for neighborhood_name in self.config.NEIGHBORHOODS:
-                logger.info(f"Searching in {neighborhood_name}...")
+            try:
+                # Make the API request
+                response = self._make_request(
+                    'GET',
+                    f"{self.config.YAD2_API_URL}/api/pre-load/getFeedIndex/realestate/rent",
+                    params=params
+                )
                 
-                try:
-                    # Mobile API search parameters
-                    search_params = {
-                        "cat": 2,
-                        "subcat": 2,
-                        "city": 5000,
-                        "neighborhood": neighborhood_name,
-                        "rooms": f"{self.config.MIN_ROOMS}-{self.config.MAX_ROOMS}",
-                        "price": "-1-13000",
-                        "parking": "1",
-                        "shelter": "1",
-                        "page": 1,
-                        "limit": 50,
-                        "filters": "parking=1&shelter=1"
-                    }
-                    
-                    # Make the API request
-                    response = self._make_request(
-                        'GET',
-                        "https://www.yad2.co.il/api/v2/feed/feed",
-                        params=search_params,
-                        headers={
-                            'Accept': 'application/json',
-                        }
-                    )
-                    
-                    if response and response.status_code == 200:
-                        try:
-                            data = response.json()
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        # Log raw response data for debugging
+                        logger.debug(f"Raw response data: {json.dumps(data, indent=2, ensure_ascii=False)}")
+                        
+                        if 'feed' in data and 'feed_items' in data['feed']:
+                            items = data['feed']['feed_items']
+                            # Log raw items data
+                            logger.debug(f"Raw feed items: {json.dumps(items, indent=2, ensure_ascii=False)}")
                             
-                            # Mobile API has a different response structure
-                            if 'data' in data and 'feed' in data['data']:
-                                any_request_succeeded = True
-                                neighborhood_listings = self.parse_listings(data['data'])
-                                
-                                filtered_listings = [
-                                    listing for listing in neighborhood_listings
-                                    if listing.get('address', {}).get('neighborhood') == neighborhood_name
-                                ]
-                                
-                                logger.info(f"Found {len(filtered_listings)} listings in {neighborhood_name}")
-                                all_listings.extend(filtered_listings)
-                                
-                                # Add a natural delay between neighborhoods
-                                if neighborhood_name != self.config.NEIGHBORHOODS[-1]:
-                                    time.sleep(random.uniform(
-                                        self.config.MIN_REQUEST_DELAY,
-                                        self.config.MAX_REQUEST_DELAY
-                                    ))
-                            else:
-                                logger.warning(f"No feed data found for {neighborhood_name}")
-                                
-                        except json.JSONDecodeError as e:
-                            logger.error(f"Failed to parse JSON response for {neighborhood_name}: {str(e)}")
-                            logger.debug(f"Response preview: {response.text[:500]}")
-                            continue
+                            # Log the first item's structure
+                            if items:
+                                first_item = items[0]
+                                logger.debug(f"First item type: {type(first_item)}")
+                                if isinstance(first_item, list):
+                                    logger.debug(f"First item length: {len(first_item)}")
+                                    logger.debug(f"First item contents: {first_item}")
+                                elif isinstance(first_item, dict):
+                                    logger.debug(f"First item keys: {first_item.keys()}")
                             
-                except Exception as e:
-                    logger.error(f"Error processing neighborhood {neighborhood_name}: {str(e)}", exc_info=True)
-                    continue
-            
-            if not any_request_succeeded:
-                logger.error("All requests failed - keeping existing listings")
-                return []
-            
-            logger.info(f"Total listings found across all neighborhoods: {len(all_listings)}")
-            return all_listings
-            
-        except Exception as e:
-            logger.error(f"Error during search: {str(e)}", exc_info=True)
-            return []
+                            neighborhood_listings = self.parse_listings(items, 'rent')
+                            all_listings.extend(neighborhood_listings)
+                            logger.info(f"Found {len(neighborhood_listings)} listings in neighborhood {neighborhood_id}")
+                        else:
+                            logger.warning(f"No feed items found in neighborhood {neighborhood_id}")
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Failed to parse JSON response for neighborhood {neighborhood_id}: {str(e)}")
+                else:
+                    logger.error(f"Failed to get listings for neighborhood {neighborhood_id}. Status code: {response.status_code}")
+                
+                # Add a random delay between neighborhood searches
+                delay = random.uniform(self.config.MIN_REQUEST_DELAY, self.config.MAX_REQUEST_DELAY)
+                time.sleep(delay)
+                
+            except Exception as e:
+                logger.error(f"Error searching neighborhood {neighborhood_id}: {str(e)}")
+                continue
+        
+        return all_listings
 
-    def parse_listings(self, data):
-        """Parse the listings from the mobile API response."""
+    def parse_listings(self, items, listing_type):
+        """Parse the listings from the response data."""
         try:
             listings = []
+            total_items = len(items)
+            skipped_items = 0
             
-            # Handle mobile API response structure
-            feed_items = data.get('feed', [])
-            
-            for item in feed_items:
+            # Process feed items
+            for item in items:
                 try:
-                    parsed = {
-                        'id': item.get('id'),
-                        'type': 'mobile',
-                        'title': f"{item.get('type_title', '')} - {item.get('street', '')} {item.get('house_number', '')}",
-                        'price': item.get('price'),
+                    # Skip non-ad items
+                    if not isinstance(item, dict) or item.get('type') != 'ad':
+                        skipped_items += 1
+                        continue
+                    
+                    # Get the listing ID - try multiple possible locations
+                    listing_id = None
+                    id_fields = ['id', 'link_token', 'order_type_id', 'ad_number', 'record_id', 'uid']
+                    
+                    for field in id_fields:
+                        if field in item and item[field]:
+                            listing_id = str(item[field])
+                            break
+                    
+                    # Skip if no valid ID found or if ID is '0'
+                    if not listing_id or listing_id == '0':
+                        skipped_items += 1
+                        logger.warning(f"Skipping listing without valid ID. Available fields: {', '.join(item.keys())}")
+                        logger.debug(f"Raw item data for skipped listing: {json.dumps(item, indent=2, ensure_ascii=False)}")
+                        continue
+                    
+                    # Get the address details
+                    street_name = item.get('street', '').strip()
+                    street_number = str(item.get('address_home_number', '')).strip()
+                    
+                    # Create a complete listing object for exclusion check
+                    listing_to_check = {
                         'address': {
-                            'street': item.get('street'),
-                            'number': item.get('house_number'),
-                            'floor': item.get('floor'),
-                            'neighborhood': item.get('neighborhood'),
-                            'city': item.get('city')
+                            'street': street_name,
+                            'number': street_number,
+                            'neighborhood': {'text': item.get('neighborhood', '')}
+                        },
+                        'title': item.get('title_1', '') or item.get('title', ''),
+                        'description': item.get('info_text', ''),
+                        'info_text': item.get('info_text', ''),
+                        'row_1': item.get('row_1', '')
+                    }
+                    
+                    # Check if the listing should be excluded
+                    if is_excluded(listing_to_check):
+                        logger.debug(f"Skipping excluded listing: {street_name} {street_number}")
+                        continue
+                    
+                    # Parse details
+                    rooms = None
+                    square_meters = None
+                    floor = None
+                    price = None
+                    
+                    # Parse row_3 for rooms and square meters
+                    row_3 = item.get('row_3', [])
+                    if isinstance(row_3, list):
+                        for detail in row_3:
+                            detail_str = str(detail)
+                            if 'חדרים' in detail_str:
+                                try:
+                                    rooms = float(detail_str.split()[0])
+                                except (ValueError, IndexError):
+                                    pass
+                            elif 'מ"ר' in detail_str:
+                                try:
+                                    square_meters = int(detail_str.split()[0])
+                                except (ValueError, IndexError):
+                                    pass
+                    
+                    # Parse row_4 for price and floor
+                    row_4 = item.get('row_4', [])
+                    if isinstance(row_4, list):
+                        for detail in row_4:
+                            if isinstance(detail, dict):
+                                if detail.get('key') == 'rooms':
+                                    try:
+                                        rooms = float(detail.get('value', 0))
+                                    except (ValueError, TypeError):
+                                        pass
+                                elif detail.get('key') == 'floor':
+                                    try:
+                                        floor = int(detail.get('value', 0))
+                                    except (ValueError, TypeError):
+                                        pass
+                                elif detail.get('key') == 'SquareMeter':
+                                    try:
+                                        if not square_meters:
+                                            value = str(detail.get('value', '')).strip()
+                                            if value:
+                                                square_meters = int(value)
+                                    except (ValueError, TypeError):
+                                        pass
+                    
+                    # Try to parse price from the price field
+                    if 'price' in item:
+                        try:
+                            # Remove currency symbol and commas, then convert to int
+                            price_str = str(item['price']).replace('₪', '').replace(',', '').strip()
+                            price = int(price_str)
+                        except (ValueError, TypeError, AttributeError):
+                            pass
+                    
+                    # Get coordinates
+                    coords = item.get('coordinates', {})
+                    latitude = coords.get('latitude')
+                    longitude = coords.get('longitude')
+                    
+                    # Get dates
+                    date_added = item.get('date_added')
+                    updated_at = item.get('updated_at')
+                    
+                    # Build the listing object
+                    parsed = {
+                        'id': listing_id,
+                        'type': listing_type,
+                        'title': item.get('title_1', '') or item.get('title', ''),
+                        'description': item.get('info_text', ''),  # Add info_text field
+                        'price': price,
+                        'address': {
+                            'street': street_name,
+                            'number': street_number,
+                            'floor': floor,
+                            'neighborhood': {'text': item.get('neighborhood', '')},
+                            'city': {'text': item.get('city', 'תל אביב יפו')},
+                            'coords': {
+                                'latitude': latitude,
+                                'longitude': longitude
+                            }
                         },
                         'details': {
-                            'rooms': item.get('rooms'),
-                            'square_meters': item.get('square_meters'),
-                            'condition': item.get('property_condition')
+                            'rooms': rooms,
+                            'square_meters': square_meters,
+                            'square_meters_build': None,  # Not available in feed items
+                            'condition': None,  # Not available in feed items
+                            'date_added': date_added,
+                            'updated_at': updated_at
                         },
-                        'images': item.get('images', []),
-                        'link': f"https://www.yad2.co.il/item/{item.get('id')}"
+                        'images': item.get('images_urls', []) or item.get('images', []),  # Try both fields
+                        'cover_image': None,  # Will be set if images are available
+                        'link': f"https://www.yad2.co.il/item/{listing_id}"
                     }
-                    # Clean up None values
-                    parsed = {k: v for k, v in parsed.items() if v is not None}
+                    
+                    # Set cover image if available
+                    if parsed['images']:
+                        parsed['cover_image'] = parsed['images'][0]
+                    
+                    # Clean up None values except for required fields
+                    parsed = {k: v for k, v in parsed.items() if k == 'id' or v is not None}
                     listings.append(parsed)
+                    
                 except Exception as e:
                     logger.error(f"Error parsing listing: {str(e)}")
+                    logger.debug(f"Raw item data for failed listing: {json.dumps(item, indent=2, ensure_ascii=False)}")
                     continue
+            
+            # Log summary of processed items
+            if skipped_items > 0:
+                logger.warning(f"Skipped {skipped_items} out of {total_items} items due to missing IDs")
+            logger.info(f"Successfully processed {len(listings)} out of {total_items} items")
             
             return listings
             
         except Exception as e:
             logger.error(f"Error parsing listings: {str(e)}", exc_info=True)
-            return [] 
+            return []
+
+    def parse_listing(self, item):
+        """Parse a listing from the feed."""
+        try:
+            # Get basic listing info
+            listing_id = item.get('id')
+            if not listing_id:
+                logger.warning(f"Skipping listing without valid ID. Available fields: {', '.join(item.keys())}")
+                return None
+            
+            # Get the address details
+            address_data = item.get('row_1', '')
+            if isinstance(address_data, list):
+                address_data = ' '.join(str(part) for part in address_data if part)
+            
+            # Parse address into components
+            street_name = address_data.strip()  # In new format, row_1 is just the street name
+            street_number = str(item.get('address_home_number', '')).strip()
+            
+            # Create listing object
+            listing = {
+                'id': listing_id,
+                'title': item.get('title', ''),
+                'type': item.get('type', ''),
+                'price': item.get('price', 0),
+                'address': {
+                    'street': street_name,
+                    'number': street_number,
+                    'floor': item.get('floor', ''),
+                    'city': item.get('city', ''),
+                    'neighborhood': item.get('neighborhood', '')
+                },
+                'details': {
+                    'rooms': item.get('rooms', ''),
+                    'square_meters': item.get('square_meters', ''),
+                    'square_meters_build': item.get('square_meters_build', ''),
+                    'date_added': item.get('date_added', ''),
+                    'date_updated': item.get('date_updated', '')
+                },
+                'images': item.get('images', []),
+                'cover_image': item.get('cover_image', ''),
+                'link': f"https://www.yad2.co.il/item/{listing_id}"
+            }
+            
+            # Add agency info if present
+            if 'agency' in item:
+                listing['agency'] = item['agency']
+            
+            # Add tags if present
+            if 'tags' in item:
+                listing['tags'] = item['tags']
+            
+            return listing
+            
+        except Exception as e:
+            logger.error(f"Error parsing listing: {str(e)}")
+            return None 
