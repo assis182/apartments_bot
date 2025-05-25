@@ -367,6 +367,13 @@ async def main():
         for listing in new_listings:
             listing_id = listing['id']
             
+            # Debug logging for הירקון 288
+            try:
+                if listing.get('address', {}).get('street') == 'הירקון' and listing.get('address', {}).get('number') == '288':
+                    logger.debug(f"Raw listing data for הירקון 288: {json.dumps(listing, indent=2, ensure_ascii=False)}")
+            except Exception as e:
+                logger.error(f"Error logging הירקון 288 data: {str(e)}")
+            
             # Skip if listing is excluded
             if is_excluded(listing):
                 continue

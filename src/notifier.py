@@ -8,6 +8,7 @@ from datetime import datetime
 import re
 import httpx
 import time
+from src.utils import is_excluded
 
 logger = logging.getLogger(__name__)
 
@@ -299,6 +300,9 @@ class TelegramNotifier:
         formatted_listings = []
         for listing_info in listings_with_dates:
             listing = listing_info['details']
+            # Check if the listing is excluded
+            if is_excluded(listing):
+                continue
             first_seen_date = datetime.fromisoformat(listing_info['first_seen']).strftime("%Y-%m-%d %H:%M")
             
             # Format the basic listing message
